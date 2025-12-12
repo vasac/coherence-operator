@@ -1501,7 +1501,7 @@ type ServiceMonitorSpec struct {
 	// HTTP scheme to use for scraping.
 	// See https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/api-reference/api.md#endpoint
 	// +optional
-	Scheme string `json:"scheme,omitempty"`
+	Scheme monitoringv1.Scheme `json:"scheme,omitempty"`
 	// Optional HTTP URL parameters
 	// See https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/api-reference/api.md#endpoint
 	// +optional
@@ -1586,7 +1586,7 @@ func (in *ServiceMonitorSpec) CreateEndpoint() monitoringv1.Endpoint {
 
 	return monitoringv1.Endpoint{
 		Path:                 in.Path,
-		Scheme:               in.Scheme,
+		Scheme:               &in.Scheme,
 		Params:               in.Params,
 		Interval:             in.Interval,
 		ScrapeTimeout:        in.ScrapeTimeout,
