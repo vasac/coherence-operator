@@ -69,3 +69,4 @@ runner
 venv
 
 .oca/
+.aider*
