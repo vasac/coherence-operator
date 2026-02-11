@@ -147,7 +147,7 @@ func createFullArgsFile(details *run_details.RunDetails, files map[string]string
 	}
 
 	path := fmt.Sprintf(v1.FileNamePattern, details.UtilsDir, os.PathSeparator, fileName)
-	if err := os.WriteFile(path, buffer.Bytes(), os.ModePerm); err != nil {
+	if err := os.WriteFile(path, buffer.Bytes(), 0o640); err != nil {
 		return errors.Wrap(err, "failed to write coherence container args file")
 	}
 	configLog.Info("Created args file", "FileName", path, "Args", buffer.String())
@@ -174,7 +174,7 @@ func createClassPathFile(details *run_details.RunDetails) (string, error) {
 		classpath = details.GetClasspath()
 	}
 	cpFile := fmt.Sprintf(v1.FileNamePattern, details.UtilsDir, os.PathSeparator, v1.OperatorClasspathFile)
-	err = os.WriteFile(cpFile, []byte(classpath), os.ModePerm)
+	err = os.WriteFile(cpFile, []byte(classpath), 0o640)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to write coherence classpath file")
 	}
@@ -187,7 +187,7 @@ func createArgsFile(details *run_details.RunDetails) (string, error) {
 	args := details.GetAllArgs()
 	argFileName := fmt.Sprintf(v1.FileNamePattern, details.UtilsDir, os.PathSeparator, v1.OperatorJvmArgsFile)
 	data := strings.Join(args, "\n")
-	if err := os.WriteFile(argFileName, []byte(data), os.ModePerm); err != nil {
+	if err := os.WriteFile(argFileName, []byte(data), 0o640); err != nil {
 		return "", errors.Wrap(err, "failed to write JVM args file "+argFileName)
 	}
 
@@ -208,7 +208,7 @@ func createSpringBootFile(details *run_details.RunDetails) (string, error) {
 		args = args + "\n" + fmt.Sprintf(v1.SystemPropertyPattern, v1.SysPropSpringLoaderMain, details.InnerMainClass)
 	}
 
-	err := os.WriteFile(argsFile, []byte(args), os.ModePerm)
+	err := os.WriteFile(argsFile, []byte(args), 0o640)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to write coherence classpath file")
 	}
@@ -227,7 +227,7 @@ func createMainClassFile(details *run_details.RunDetails) (string, error) {
 		s = fmt.Sprintf("%s\n%s", details.MainClass, details.InnerMainClass)
 	}
 
-	if err := os.WriteFile(fileName, []byte(s), os.ModePerm); err != nil {
+	if err := os.WriteFile(fileName, []byte(s), 0o640); err != nil {
 		return "", errors.Wrap(err, "failed to write coherence classpath file")
 	}
 	configLog.Info("Created main class file", "FileName", fileName, "Content", s)
@@ -276,7 +276,7 @@ func createCliConfig(details *run_details.RunDetails) error {
 	buffer.WriteString("defaultbytesformat: m\n")
 	buffer.WriteString("ignoreinvalidcerts: false\n")
 	buffer.WriteString("requesttimeout: 30\n")
-	if err := os.WriteFile(fileName, buffer.Bytes(), os.ModePerm); err != nil {
+	if err := os.WriteFile(fileName, buffer.Bytes(), 0o640); err != nil {
 		configLog.Error(err, "Failed to write coherence CLI config file", "FileName", fileName)
 		return nil
 	}
