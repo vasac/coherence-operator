@@ -783,7 +783,10 @@ func (in *ReconcileStatefulSet) updateDeploymentStatus(ctx context.Context, requ
 		if updated.Status.Update(deployment, stsStatus) {
 			// Bug39366679/PLAN.md: use the compact status patch writer so repairing
 			// a bloated conditions list does not require sending a full status update.
-			_, _, err = statuspatch.PatchStatus(ctx, in.GetClient(), deployment, updated, true)
+			// Do not force conditions for ordinary scalar StatefulSet status changes;
+			// otherwise a stale cache read can replace conditions written by another
+			// reconcile, such as the Created condition used by start-quorum tests.
+			_, _, err = statuspatch.PatchStatus(ctx, in.GetClient(), deployment, updated, false)
 		}
 	}
 	return deployment, err

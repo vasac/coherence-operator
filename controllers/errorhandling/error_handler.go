@@ -350,7 +350,10 @@ func (eh *ErrorHandler) updateStatus(ctx context.Context, resource coh.Coherence
 	// failed condition, allowing a compact status patch to repair Bug39366679 CRs.
 	status.SetCondition(latest, condition)
 
-	_, _, err := statuspatch.PatchStatus(ctx, eh.Client, original, updated, true)
+	// Bug39366679/PLAN.md: the patch builder detects the Failed condition change
+	// itself; forcing conditions here would risk replacing conditions from a
+	// fresher reconcile when no normalization repair was needed.
+	_, _, err := statuspatch.PatchStatus(ctx, eh.Client, original, updated, false)
 	return err
 }
 

@@ -71,3 +71,29 @@ func TestCreateStatusMergePatchIncludesZeroValueTransitions(t *testing.T) {
 	g.Expect(patch["status"]).To(gomega.HaveKeyWithValue("readyReplicas", float64(0)))
 	g.Expect(patch["status"]).To(gomega.HaveKeyWithValue("actionsExecuted", false))
 }
+
+func TestCreateStatusMergePatchDoesNotReplaceConditionsForScalarOnlyChange(t *testing.T) {
+	g := gomega.NewGomegaWithT(t)
+
+	original := &coh.Coherence{}
+	original.Status.Hash = "old"
+	original.Status.Conditions = coh.Conditions{
+		{Type: coh.ConditionTypeCreated, Status: corev1.ConditionTrue},
+		{Type: coh.ConditionTypeWaiting, Status: corev1.ConditionTrue, Reason: "StatusQuorum"},
+	}
+
+	updated := original.DeepCopy()
+	updated.Status.Hash = "new"
+
+	data, changed, err := CreateStatusMergePatch(original, updated, false)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(changed).To(gomega.BeTrue())
+
+	var patch map[string]map[string]json.RawMessage
+	g.Expect(json.Unmarshal(data, &patch)).To(gomega.Succeed())
+	g.Expect(patch["status"]).To(gomega.HaveKey("hash"))
+	// Bug39366679/PLAN.md: scalar-only patches should not replace the whole
+	// conditions array. The expected effect is that conditions such as Created,
+	// written by a nearby reconcile, cannot be dropped by a stale scalar patch.
+	g.Expect(patch["status"]).NotTo(gomega.HaveKey("conditions"))
+}

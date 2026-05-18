@@ -370,8 +370,10 @@ func (in *ReconcileJob) updateDeploymentStatus(ctx context.Context, request reco
 		}
 		if updated.Status.UpdateFromJob(cj, jobStatus, probeStatuses) {
 			// Bug39366679/PLAN.md requires compact status patches for Job status
-			// and jobProbes so a bloated conditions list is replaced, not re-sent.
-			_, _, err = statuspatch.PatchStatus(ctx, in.GetClient(), cj, updated, true)
+			// and jobProbes. Let the patch builder include conditions only when they
+			// changed or were normalized, so scalar/probe updates do not overwrite
+			// conditions written by another reconcile.
+			_, _, err = statuspatch.PatchStatus(ctx, in.GetClient(), cj, updated, false)
 		}
 	}
 	return err

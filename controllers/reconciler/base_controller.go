@@ -182,8 +182,11 @@ func (in *CommonReconciler) updateDeploymentStatusCondition(ctx context.Context,
 		status := updated.GetStatus()
 		if status.SetCondition(deployment, c) {
 			// Bug39366679/PLAN.md: status conditions must be patched with a compact
-			// JSON merge body, not strategic-merge bytes using MergePatchType.
-			_, _, err = statuspatch.PatchStatus(ctx, in.GetClient(), deployment, updated, true)
+			// JSON merge body, not strategic-merge bytes using MergePatchType. Passing
+			// false avoids forcing a full conditions replacement when SetCondition made
+			// no condition-array repair; real condition changes are still detected by
+			// the patch builder.
+			_, _, err = statuspatch.PatchStatus(ctx, in.GetClient(), deployment, updated, false)
 			if err != nil {
 				return errors.Wrap(err, "updating Coherence resource status")
 			}
@@ -223,7 +226,8 @@ func (in *CommonReconciler) updateDeploymentStatusHash(ctx context.Context, key 
 	default:
 		updated := deployment.DeepCopyResource()
 		status := updated.GetStatus()
-		changed := status.NormalizeStatus()
+		normalizationDirty := status.NormalizeStatus()
+		changed := normalizationDirty
 		if status.Hash != hash {
 			status.Hash = hash
 			changed = true
@@ -232,9 +236,11 @@ func (in *CommonReconciler) updateDeploymentStatusHash(ctx context.Context, key 
 			changed = true
 		}
 		if changed {
-			// The compact patch helper includes zero-value transitions and a normalized
-			// replacement conditions array, which prevents status bloat recurrence.
-			_, _, err = statuspatch.PatchStatus(ctx, in.GetClient(), deployment, updated, true)
+			// Bug39366679/PLAN.md: scalar status writes should not replace the whole
+			// conditions array unless this path actually repaired historical bloat; this
+			// preserves conditions written by nearby reconciles while still shrinking
+			// bloated resources.
+			_, _, err = statuspatch.PatchStatus(ctx, in.GetClient(), deployment, updated, normalizationDirty)
 			if err != nil {
 				return errors.Wrap(err, "updating Coherence resource status")
 			}
@@ -301,15 +307,18 @@ func (in *CommonReconciler) updateDeploymentStatusActionsState(ctx context.Conte
 	default:
 		updated := deployment.DeepCopyResource()
 		status := updated.GetStatus()
-		changed := status.NormalizeStatus()
+		normalizationDirty := status.NormalizeStatus()
+		changed := normalizationDirty
 		if status.ActionsExecuted != actionExecuted {
 			status.ActionsExecuted = actionExecuted
 			changed = true
 		}
 		if changed {
 			// CoherenceJob also uses actionsExecuted; using the concrete resource avoids
-			// silently patching the wrong API kind during Job reconciliation.
-			_, _, err = statuspatch.PatchStatus(ctx, in.GetClient(), deployment, updated, true)
+			// silently patching the wrong API kind during Job reconciliation. Only
+			// force conditions when normalization repaired Bug39366679 bloat, so scalar
+			// action updates do not overwrite conditions from another reconcile.
+			_, _, err = statuspatch.PatchStatus(ctx, in.GetClient(), deployment, updated, normalizationDirty)
 			if err != nil {
 				return errors.Wrap(err, "updating Coherence resource status")
 			}
@@ -492,11 +501,12 @@ func (in *CommonReconciler) HandleErrAndFinish(ctx context.Context, err error, d
 		// update the status to failed.
 		updated := deployment.DeepCopy()
 		status := updated.GetStatus()
-		_ = status.NormalizeStatus()
+		normalizationDirty := status.NormalizeStatus()
 		status.Phase = coh.ConditionTypeFailed
 		// Use the compact status patch here too so error handling does not re-send
-		// a large status body while processing Bug39366679-style failures.
-		if _, _, e := statuspatch.PatchStatus(ctx, in.GetClient(), deployment, updated, true); e != nil {
+		// a large status body while processing Bug39366679-style failures. The
+		// conditions array is only forced when normalization actually repaired bloat.
+		if _, _, e := statuspatch.PatchStatus(ctx, in.GetClient(), deployment, updated, normalizationDirty); e != nil {
 			// There isn't much we can do, we're already handling an error
 			logger.V(0).Info("failed to update deployment status due to: " + e.Error())
 		}

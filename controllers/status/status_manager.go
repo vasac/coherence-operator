@@ -68,7 +68,10 @@ func (sm *StatusManager) UpdateDeploymentStatusHash(ctx context.Context, namespa
 func (sm *StatusManager) patchStatus(ctx context.Context, original, updated *coh.Coherence) error {
 	// Bug39366679/PLAN.md: this path previously created strategic-merge bytes
 	// and applied them as a JSON merge patch, which made empty conditions append.
-	patched, data, err := statuspatch.PatchStatus(ctx, sm.Client, original, updated, true)
+	// Let the compact builder decide when conditions really changed; forcing every
+	// status-manager patch to replace conditions can drop conditions written by a
+	// fresher reconcile.
+	patched, data, err := statuspatch.PatchStatus(ctx, sm.Client, original, updated, false)
 	if err != nil {
 		return errors.Wrapf(err, "updating status for Coherence resource %s/%s", original.Namespace, original.Name)
 	}
