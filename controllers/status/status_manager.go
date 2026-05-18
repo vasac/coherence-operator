@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2025, Oracle and/or its affiliates.
+ * Copyright (c) 2020, 2026, Oracle and/or its affiliates.
  * Licensed under the Universal Permissive License v 1.0 as shown at
  * http://oss.oracle.com/licenses/upl.
  */
@@ -8,11 +8,14 @@ package status
 
 import (
 	"context"
+
 	"github.com/go-logr/logr"
 	coh "github.com/oracle/coherence-operator/api/v1"
 	"github.com/oracle/coherence-operator/pkg/operator"
 	"github.com/oracle/coherence-operator/pkg/patching"
+	"github.com/oracle/coherence-operator/pkg/statuspatch"
 	"github.com/pkg/errors"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -33,9 +36,12 @@ func (sm *StatusManager) UpdateCoherenceStatusPhase(ctx context.Context, namespa
 		return errors.Wrapf(err, "getting Coherence resource %s/%s", namespacedName.Namespace, namespacedName.Name)
 	}
 
-	// Update the status phase
 	updated := deployment.DeepCopy()
-	updated.Status.Phase = phase
+	// Bug39366679/PLAN.md: use SetCondition rather than writing Phase directly so
+	// scalar phase and status.conditions stay consistent on this status path.
+	if !updated.Status.SetCondition(deployment, coh.Condition{Type: phase, Status: corev1.ConditionTrue}) {
+		return nil
+	}
 
 	// Update the resource
 	return sm.patchStatus(ctx, deployment, updated)
@@ -60,17 +66,14 @@ func (sm *StatusManager) UpdateDeploymentStatusHash(ctx context.Context, namespa
 }
 
 func (sm *StatusManager) patchStatus(ctx context.Context, original, updated *coh.Coherence) error {
-	patch, err := sm.Patcher.CreateTwoWayPatchOfType(types.MergePatchType, original.Name, updated, original)
+	// Bug39366679/PLAN.md: this path previously created strategic-merge bytes
+	// and applied them as a JSON merge patch, which made empty conditions append.
+	patched, data, err := statuspatch.PatchStatus(ctx, sm.Client, original, updated, true)
 	if err != nil {
-		return errors.Wrapf(err, "creating status patch for Coherence resource %s/%s", original.Namespace, original.Name)
+		return errors.Wrapf(err, "updating status for Coherence resource %s/%s", original.Namespace, original.Name)
 	}
-	if patch != nil {
-		sm.Log.Info("Patching status", "Namespace", original.Namespace, "Name", original.Name, "Patch", patch)
-		err = sm.Client.Status().Patch(ctx, original, patch)
-		if err != nil {
-			return errors.Wrapf(err, "updating status for Coherence resource %s/%s", original.Namespace, original.Name)
-		}
-		sm.Log.Info("Patched status", "Namespace", original.Namespace, "Name", original.Name, "Patch", patch)
+	if patched {
+		sm.Log.Info("Patched status", "Namespace", original.Namespace, "Name", original.Name, "PatchSize", len(data))
 	}
 	return nil
 }

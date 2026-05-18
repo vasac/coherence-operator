@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2022, Oracle and/or its affiliates.
+ * Copyright (c) 2020, 2026, Oracle and/or its affiliates.
  * Licensed under the Universal Permissive License v 1.0 as shown at
  * http://oss.oracle.com/licenses/upl.
  */
@@ -81,6 +81,65 @@ func NewConditions(conds ...Condition) Conditions {
 		conditions.SetCondition(c)
 	}
 	return conditions
+}
+
+// NormalizeConditions removes invalid condition entries and deduplicates by
+// condition type, keeping the condition with the newest transition time.
+//
+// Bug39366679/coherence.yaml showed that empty type/status entries can grow to
+// tens of thousands of list items. Normalizing before status writes makes the
+// next status patch replace that bloated list with the small API condition set.
+func NormalizeConditions(in Conditions) Conditions {
+	if len(in) == 0 {
+		return in
+	}
+
+	byType := make(map[ConditionType]Condition, len(in))
+	for _, condition := range in {
+		if condition.Type == "" || condition.Status == "" {
+			// Empty type or status cannot describe a useful API condition; dropping
+			// them is what lets Bug39366679 repairs shrink the stored status.
+			continue
+		}
+
+		existing, found := byType[condition.Type]
+		if !found || shouldReplaceCondition(existing, condition) {
+			byType[condition.Type] = condition
+		}
+	}
+
+	conditions := make(Conditions, 0, len(byType))
+	for _, condition := range byType {
+		conditions = append(conditions, condition)
+	}
+	sort.Slice(conditions, func(a, b int) bool {
+		return conditions[a].Type < conditions[b].Type
+	})
+	return conditions
+}
+
+func shouldReplaceCondition(existing, candidate Condition) bool {
+	switch {
+	case candidate.LastTransitionTime.After(existing.LastTransitionTime.Time):
+		return true
+	case existing.LastTransitionTime.After(candidate.LastTransitionTime.Time):
+		return false
+	default:
+		// When Kubernetes timestamps tie, prefer the entry with user-visible context
+		// so the normalized condition remains useful after deduplication.
+		return conditionContextScore(candidate) > conditionContextScore(existing)
+	}
+}
+
+func conditionContextScore(condition Condition) int {
+	score := 0
+	if condition.Reason != "" {
+		score++
+	}
+	if condition.Message != "" {
+		score++
+	}
+	return score
 }
 
 // IsTrueFor searches the set of conditions for a condition with the given

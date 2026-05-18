@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2025, Oracle and/or its affiliates.
+ * Copyright (c) 2020, 2026, Oracle and/or its affiliates.
  * Licensed under the Universal Permissive License v 1.0 as shown at
  * http://oss.oracle.com/licenses/upl.
  */
@@ -7,11 +7,22 @@
 package errorhandling
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/go-logr/logr"
+	coh "github.com/oracle/coherence-operator/api/v1"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 // TestOperationError tests the OperationError type
@@ -125,4 +136,74 @@ func TestGetCallerInfo(t *testing.T) {
 	callerInfo := GetCallerInfo(0)
 	assert.Contains(t, callerInfo, "error_handler_test.go")
 	assert.Contains(t, callerInfo, ":")
+}
+
+func TestBoundPersistedAnnotationPreservesHeadAndTail(t *testing.T) {
+	value := "head-" + strings.Repeat("x", persistedAnnotationMaxBytes) + "-tail"
+
+	bounded := boundPersistedAnnotation(value)
+
+	assert.Less(t, len(bounded), persistedAnnotationMaxBytes)
+	assert.Contains(t, bounded, "head-")
+	assert.Contains(t, bounded, "-tail")
+	assert.Contains(t, bounded, "truncated")
+}
+
+func TestUpdateStatusRepairsBloatedConditionFixture(t *testing.T) {
+	ctx := context.Background()
+	key := types.NamespacedName{Namespace: "default", Name: "bloated"}
+
+	deployment := &coh.Coherence{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "coherence.oracle.com/v1",
+			Kind:       "Coherence",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: key.Namespace,
+			Name:      key.Name,
+		},
+	}
+	deployment.Status.Conditions = make(coh.Conditions, 0, 50001)
+	for i := 0; i < 50000; i++ {
+		deployment.Status.Conditions = append(deployment.Status.Conditions, coh.Condition{})
+	}
+	deployment.Status.Conditions = append(deployment.Status.Conditions, coh.Condition{
+		Type:   coh.ConditionTypeReady,
+		Status: corev1.ConditionTrue,
+	})
+
+	s := runtime.NewScheme()
+	assert.NoError(t, clientgoscheme.AddToScheme(s))
+	gv := schema.GroupVersion{Group: "coherence.oracle.com", Version: "v1"}
+	s.AddKnownTypes(gv, &coh.Coherence{}, &coh.CoherenceList{})
+	metav1.AddToGroupVersion(s, gv)
+
+	client := fake.NewClientBuilder().
+		WithScheme(s).
+		WithRuntimeObjects(deployment).
+		WithStatusSubresource(deployment).
+		Build()
+
+	handler := &ErrorHandler{
+		Client: client,
+		Log:    logr.Discard(),
+	}
+
+	// Bug39366679/PLAN.md: this uses a controller-level bloated fixture so the
+	// failure-path status write proves it repairs old empty conditions while adding
+	// the Failed condition expected for transient reconcile errors.
+	assert.NoError(t, handler.updateStatus(ctx, deployment, ErrorCategoryTransient))
+
+	actual := &coh.Coherence{}
+	assert.NoError(t, client.Get(ctx, key, actual))
+	assert.Less(t, len(actual.Status.Conditions), 10)
+	for _, condition := range actual.Status.Conditions {
+		assert.NotEmpty(t, condition.Type)
+		assert.NotEmpty(t, condition.Status)
+	}
+
+	failed := actual.Status.Conditions.GetCondition(coh.ConditionTypeFailed)
+	assert.NotNil(t, failed)
+	assert.Equal(t, coh.ConditionTypeFailed, actual.Status.Phase)
+	assert.Equal(t, corev1.ConditionTrue, failed.Status)
 }

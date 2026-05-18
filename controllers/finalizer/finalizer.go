@@ -73,7 +73,7 @@ func (fm *FinalizerManager) FinalizeDeployment(ctx context.Context, c *coh.Coher
 	// Check if the finalizer bypass annotation is present
 	annotations := c.GetAnnotations()
 	if annotations != nil {
-		if _, bypass := annotations["coherence.oracle.com/finalizer-bypass"]; bypass {
+		if _, bypass := annotations[coh.AnnotationFinalizerBypass]; bypass {
 			fm.Log.Info("Bypassing service suspension due to finalizer-bypass annotation",
 				"Namespace", c.Namespace, "Name", c.Name)
 			fm.EventRecorder.Eventf(c, nil, corev1.EventTypeNormal, "FinalizerBypassed", "Finalize",
@@ -119,7 +119,9 @@ func (fm *FinalizerManager) FinalizeDeployment(ctx context.Context, c *coh.Coher
 				// This prevents resources from being stuck in a deleting state indefinitely
 				errorCount := 1
 				if annotations != nil {
-					if countStr, ok := annotations["coherence.oracle.com/error-count"]; ok {
+					// Use the shared key from Bug39366679/PLAN.md so finalizer logic
+					// reads the same bounded error counter written by error handling.
+					if countStr, ok := annotations[coh.AnnotationErrorCount]; ok {
 						if parsedCount, err := strconv.Atoi(countStr); err == nil {
 							errorCount = parsedCount
 						}

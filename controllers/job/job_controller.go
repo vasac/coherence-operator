@@ -17,6 +17,7 @@ import (
 	"github.com/oracle/coherence-operator/pkg/clients"
 	"github.com/oracle/coherence-operator/pkg/patching"
 	"github.com/oracle/coherence-operator/pkg/probe"
+	"github.com/oracle/coherence-operator/pkg/statuspatch"
 	"github.com/oracle/coherence-operator/pkg/utils"
 	"github.com/pkg/errors"
 	batchv1 "k8s.io/api/batch/v1"
@@ -34,7 +35,7 @@ const (
 	controllerName = "controllers.Job"
 
 	CreateMessage        string = "successfully created Job for Coherence resource '%s'"
-	FailedToPatchMessage string = "failed to patch Coherence resource %s due to error\n%s"
+	FailedToPatchMessage string = "failed to patch Coherence resource %s"
 )
 
 // blank assignment to verify that ReconcileServiceMonitor implements reconcile.Reconciler.
@@ -134,7 +135,7 @@ func (in *ReconcileJob) ReconcileAllResourceOfKind(ctx context.Context, request 
 				// If the Coherence resource did not exist then service suspension already happened
 				// when the Coherence resource was deleted.
 				logger.Info("Scaling down to zero")
-				err = in.UpdateDeploymentStatusActionsState(ctx, request.NamespacedName, false)
+				err = in.UpdateCoherenceJobStatusActionsState(ctx, request.NamespacedName, false)
 				// TODO: what to do with error?
 				if err != nil {
 					logger.Info("Error updating CoherenceJob status", "error", err.Error())
@@ -242,7 +243,9 @@ func (in *ReconcileJob) patchJob(ctx context.Context, deployment coh.CoherenceRe
 	if resource.IsPresent() {
 		err := resource.As(original)
 		if err != nil {
-			return in.HandleErrAndRequeue(ctx, err, deployment, fmt.Sprintf(FailedToPatchMessage, deployment.GetName(), err.Error()), logger)
+			// Bug39366679/PLAN.md: pass concise context only; HandleErrAndRequeue
+			// logs and records the error separately so large errors are not duplicated.
+			return in.HandleErrAndRequeue(ctx, err, deployment, fmt.Sprintf(FailedToPatchMessage, deployment.GetName()), logger)
 		}
 	} else {
 		// there was no previous
@@ -324,7 +327,9 @@ func (in *ReconcileJob) patchJob(ctx context.Context, deployment coh.CoherenceRe
 	switch {
 	case err != nil:
 		logger.Info("Error patching Job " + err.Error())
-		return in.HandleErrAndRequeue(ctx, err, deployment, fmt.Sprintf(FailedToPatchMessage, deployment.GetName(), err.Error()), logger)
+		// Bug39366679/PLAN.md: avoid embedding err.Error() in the handler message;
+		// events and logs append the error once inside the common handler.
+		return in.HandleErrAndRequeue(ctx, err, deployment, fmt.Sprintf(FailedToPatchMessage, deployment.GetName()), logger)
 	case !patched:
 		return reconcile.Result{RequeueAfter: time.Minute}, nil
 	}
@@ -364,7 +369,9 @@ func (in *ReconcileJob) updateDeploymentStatus(ctx context.Context, request reco
 			jobStatus = &job.Status
 		}
 		if updated.Status.UpdateFromJob(cj, jobStatus, probeStatuses) {
-			err = in.GetClient().Status().Update(ctx, updated)
+			// Bug39366679/PLAN.md requires compact status patches for Job status
+			// and jobProbes so a bloated conditions list is replaced, not re-sent.
+			_, _, err = statuspatch.PatchStatus(ctx, in.GetClient(), cj, updated, true)
 		}
 	}
 	return err

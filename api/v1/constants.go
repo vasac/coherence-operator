@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2025, Oracle and/or its affiliates.
+ * Copyright (c) 2020, 2026, Oracle and/or its affiliates.
  * Licensed under the Universal Permissive License v 1.0 as shown at
  * http://oss.oracle.com/licenses/upl.
  */
@@ -66,6 +66,32 @@ const (
 	AnnotationOperatorVersion = "com.oracle.coherence.operator/version"
 	// AnnotationIstioConfig is the Istio config annotation applied to Pods.
 	AnnotationIstioConfig = "proxy.istio.io/config"
+	// AnnotationLastError stores the most recent reconcile error on the owning Coherence resource.
+	AnnotationLastError = "coherence.oracle.com/last-error"
+	// AnnotationErrorCount stores the number of consecutive reconcile errors on the owning Coherence resource.
+	AnnotationErrorCount = "coherence.oracle.com/error-count"
+	// AnnotationLastRecoveryAttempt stores the most recent automatic recovery attempt timestamp.
+	AnnotationLastRecoveryAttempt = "coherence.oracle.com/last-recovery-attempt"
+	// AnnotationLastUnhandledError stores the most recent error that did not match a recovery handler.
+	AnnotationLastUnhandledError = "coherence.oracle.com/last-unhandled-error"
+	// AnnotationDiagnosticInfo stores bounded diagnostics for operators and support.
+	AnnotationDiagnosticInfo = "coherence.oracle.com/diagnostic-info"
+	// AnnotationFinalizerBypass allows deletion to continue after repeated service-suspension failures.
+	AnnotationFinalizerBypass = "coherence.oracle.com/finalizer-bypass"
+	// AnnotationPDBIssueDetected records that automatic recovery detected a PodDisruptionBudget issue.
+	AnnotationPDBIssueDetected = "coherence.oracle.com/pdb-issue-detected"
+	// AnnotationPDBIssueTime records when a PodDisruptionBudget issue was detected.
+	AnnotationPDBIssueTime = "coherence.oracle.com/pdb-issue-time"
+	// AnnotationForceReconcile requests a fresh reconciliation of owned resources.
+	AnnotationForceReconcile = "coherence.oracle.com/force-reconcile"
+	// AnnotationQuotaIssueDetected records that automatic recovery detected a resource quota issue.
+	AnnotationQuotaIssueDetected = "coherence.oracle.com/quota-issue-detected"
+	// AnnotationQuotaIssueTime records when a resource quota issue was detected.
+	AnnotationQuotaIssueTime = "coherence.oracle.com/quota-issue-time"
+	// AnnotationSchedulingIssueDetected records that automatic recovery detected a pod scheduling issue.
+	AnnotationSchedulingIssueDetected = "coherence.oracle.com/scheduling-issue-detected"
+	// AnnotationSchedulingIssueTime records when a pod scheduling issue was detected.
+	AnnotationSchedulingIssueTime = "coherence.oracle.com/scheduling-issue-time"
 	// DefaultIstioConfigAnnotationValue is the default for the istio config annotation.
 	// This makes the Istio Sidecar the first container in the Pod to allow it to ideally
 	// be started before the Coherence container

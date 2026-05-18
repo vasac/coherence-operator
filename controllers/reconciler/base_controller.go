@@ -19,6 +19,7 @@ import (
 	"github.com/oracle/coherence-operator/pkg/clients"
 	"github.com/oracle/coherence-operator/pkg/operator"
 	"github.com/oracle/coherence-operator/pkg/patching"
+	"github.com/oracle/coherence-operator/pkg/statuspatch"
 	"github.com/oracle/coherence-operator/pkg/utils"
 	"github.com/pkg/errors"
 	"golang.org/x/mod/semver"
@@ -180,15 +181,11 @@ func (in *CommonReconciler) updateDeploymentStatusCondition(ctx context.Context,
 		updated := deployment.DeepCopyResource()
 		status := updated.GetStatus()
 		if status.SetCondition(deployment, c) {
-			patch, err := in.CreateTwoWayPatchOfType(types.MergePatchType, deployment.GetName(), updated, deployment)
+			// Bug39366679/PLAN.md: status conditions must be patched with a compact
+			// JSON merge body, not strategic-merge bytes using MergePatchType.
+			_, _, err = statuspatch.PatchStatus(ctx, in.GetClient(), deployment, updated, true)
 			if err != nil {
-				return errors.Wrap(err, "creating Coherence resource status patch")
-			}
-			if patch != nil {
-				err = in.GetClient().Status().Patch(ctx, deployment, patch)
-				if err != nil {
-					return errors.Wrap(err, "updating Coherence resource status")
-				}
+				return errors.Wrap(err, "updating Coherence resource status")
 			}
 		}
 	}
@@ -197,8 +194,21 @@ func (in *CommonReconciler) updateDeploymentStatusCondition(ctx context.Context,
 
 // UpdateDeploymentStatusHash updates the Coherence resource's status hash.
 func (in *CommonReconciler) UpdateDeploymentStatusHash(ctx context.Context, key types.NamespacedName, hash string) error {
+	return in.UpdateCoherenceStatusHash(ctx, key, hash)
+}
+
+// UpdateCoherenceStatusHash updates the Coherence resource's status hash.
+func (in *CommonReconciler) UpdateCoherenceStatusHash(ctx context.Context, key types.NamespacedName, hash string) error {
+	return in.updateDeploymentStatusHash(ctx, key, hash, &coh.Coherence{})
+}
+
+// UpdateCoherenceJobStatusHash updates the CoherenceJob resource's status hash.
+func (in *CommonReconciler) UpdateCoherenceJobStatusHash(ctx context.Context, key types.NamespacedName, hash string) error {
+	return in.updateDeploymentStatusHash(ctx, key, hash, &coh.CoherenceJob{})
+}
+
+func (in *CommonReconciler) updateDeploymentStatusHash(ctx context.Context, key types.NamespacedName, hash string, deployment coh.CoherenceResource) error {
 	var err error
-	deployment := &coh.Coherence{}
 	err = in.GetClient().Get(ctx, key, deployment)
 	switch {
 	case err != nil && apierrors.IsNotFound(err):
@@ -211,19 +221,22 @@ func (in *CommonReconciler) UpdateDeploymentStatusHash(ctx context.Context, key 
 		// deployment is being deleted
 		err = nil
 	default:
-		if deployment.Status.Hash != hash {
-			updated := deployment.DeepCopy()
-			updated.Status.Hash = hash
-			updated.Status.SetVersion(operator.GetVersion())
-			patch, err := in.CreateTwoWayPatchOfType(types.MergePatchType, deployment.Name, updated, deployment)
+		updated := deployment.DeepCopyResource()
+		status := updated.GetStatus()
+		changed := status.NormalizeStatus()
+		if status.Hash != hash {
+			status.Hash = hash
+			changed = true
+		}
+		if status.SetVersion(operator.GetVersion()) {
+			changed = true
+		}
+		if changed {
+			// The compact patch helper includes zero-value transitions and a normalized
+			// replacement conditions array, which prevents status bloat recurrence.
+			_, _, err = statuspatch.PatchStatus(ctx, in.GetClient(), deployment, updated, true)
 			if err != nil {
-				return errors.Wrap(err, "creating Coherence resource status patch")
-			}
-			if patch != nil {
-				err = in.GetClient().Status().Patch(ctx, deployment, patch)
-				if err != nil {
-					return errors.Wrap(err, "updating Coherence resource status")
-				}
+				return errors.Wrap(err, "updating Coherence resource status")
 			}
 		}
 	}
@@ -260,7 +273,20 @@ func (in *CommonReconciler) MaybeFindJob(ctx context.Context, namespace, name st
 
 // UpdateDeploymentStatusActionsState updates the Coherence resource's status ActionsExecuted flag.
 func (in *CommonReconciler) UpdateDeploymentStatusActionsState(ctx context.Context, key types.NamespacedName, actionExecuted bool) error {
-	deployment := &coh.Coherence{}
+	return in.UpdateCoherenceStatusActionsState(ctx, key, actionExecuted)
+}
+
+// UpdateCoherenceStatusActionsState updates the Coherence resource's status ActionsExecuted flag.
+func (in *CommonReconciler) UpdateCoherenceStatusActionsState(ctx context.Context, key types.NamespacedName, actionExecuted bool) error {
+	return in.updateDeploymentStatusActionsState(ctx, key, actionExecuted, &coh.Coherence{})
+}
+
+// UpdateCoherenceJobStatusActionsState updates the CoherenceJob resource's status ActionsExecuted flag.
+func (in *CommonReconciler) UpdateCoherenceJobStatusActionsState(ctx context.Context, key types.NamespacedName, actionExecuted bool) error {
+	return in.updateDeploymentStatusActionsState(ctx, key, actionExecuted, &coh.CoherenceJob{})
+}
+
+func (in *CommonReconciler) updateDeploymentStatusActionsState(ctx context.Context, key types.NamespacedName, actionExecuted bool, deployment coh.CoherenceResource) error {
 	err := in.GetClient().Get(ctx, key, deployment)
 	switch {
 	case err != nil && apierrors.IsNotFound(err):
@@ -273,18 +299,19 @@ func (in *CommonReconciler) UpdateDeploymentStatusActionsState(ctx context.Conte
 		// deployment is being deleted
 		err = nil
 	default:
-		if deployment.Status.ActionsExecuted != actionExecuted {
-			updated := deployment.DeepCopy()
-			updated.Status.ActionsExecuted = actionExecuted
-			patch, err := in.CreateTwoWayPatchOfType(types.MergePatchType, deployment.Name, updated, deployment)
+		updated := deployment.DeepCopyResource()
+		status := updated.GetStatus()
+		changed := status.NormalizeStatus()
+		if status.ActionsExecuted != actionExecuted {
+			status.ActionsExecuted = actionExecuted
+			changed = true
+		}
+		if changed {
+			// CoherenceJob also uses actionsExecuted; using the concrete resource avoids
+			// silently patching the wrong API kind during Job reconciliation.
+			_, _, err = statuspatch.PatchStatus(ctx, in.GetClient(), deployment, updated, true)
 			if err != nil {
-				return errors.Wrap(err, "creating Coherence resource status patch")
-			}
-			if patch != nil {
-				err = in.GetClient().Status().Patch(ctx, deployment, patch)
-				if err != nil {
-					return errors.Wrap(err, "updating Coherence resource status")
-				}
+				return errors.Wrap(err, "updating Coherence resource status")
 			}
 		}
 	}
@@ -463,9 +490,13 @@ func (in *CommonReconciler) HandleErrAndFinish(ctx context.Context, err error, d
 
 	if deployment != nil {
 		// update the status to failed.
-		status := deployment.GetStatus()
+		updated := deployment.DeepCopy()
+		status := updated.GetStatus()
+		_ = status.NormalizeStatus()
 		status.Phase = coh.ConditionTypeFailed
-		if e := in.GetClient().Status().Update(ctx, deployment); e != nil {
+		// Use the compact status patch here too so error handling does not re-send
+		// a large status body while processing Bug39366679-style failures.
+		if _, _, e := statuspatch.PatchStatus(ctx, in.GetClient(), deployment, updated, true); e != nil {
 			// There isn't much we can do, we're already handling an error
 			logger.V(0).Info("failed to update deployment status due to: " + e.Error())
 		}

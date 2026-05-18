@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2025, Oracle and/or its affiliates.
+ * Copyright (c) 2020, 2026, Oracle and/or its affiliates.
  * Licensed under the Universal Permissive License v 1.0 as shown at
  * http://oss.oracle.com/licenses/upl.
  */
@@ -167,7 +167,7 @@ func (in *CoherenceJobReconciler) ReconcileDeployment(ctx context.Context, reque
 			return result, errors.Wrap(err, "error updating storage status hash")
 		}
 		hashNew := deployment.GetGenerationString()
-		if err = in.UpdateDeploymentStatusHash(ctx, request.NamespacedName, hashNew); err != nil {
+		if err = in.UpdateCoherenceJobStatusHash(ctx, request.NamespacedName, hashNew); err != nil {
 			return result, errors.Wrap(err, "error updating deployment status hash")
 		}
 		return result, nil
@@ -231,7 +231,7 @@ func (in *CoherenceJobReconciler) ReconcileDeployment(ctx context.Context, reque
 	}
 
 	// Update the Status with the hash
-	if err = in.UpdateDeploymentStatusHash(ctx, request.NamespacedName, hash); err != nil {
+	if err = in.UpdateCoherenceJobStatusHash(ctx, request.NamespacedName, hash); err != nil {
 		return result, errors.Wrap(err, "error updating deployment status hash")
 	}
 

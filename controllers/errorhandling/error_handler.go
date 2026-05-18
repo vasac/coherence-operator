@@ -16,6 +16,8 @@ import (
 
 	"github.com/go-logr/logr"
 	coh "github.com/oracle/coherence-operator/api/v1"
+	"github.com/oracle/coherence-operator/pkg/metadatapatch"
+	"github.com/oracle/coherence-operator/pkg/statuspatch"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -39,12 +41,9 @@ const (
 	// ErrorCategoryUnknown represents an error of unknown category
 	ErrorCategoryUnknown ErrorCategory = "Unknown"
 
-	// AnnotationLastError is the annotation key for the last error message
-	AnnotationLastError = "coherence.oracle.com/last-error"
-	// AnnotationErrorCount is the annotation key for the error count
-	AnnotationErrorCount = "coherence.oracle.com/error-count"
-	// AnnotationLastRecoveryAttempt is the annotation key for the last recovery attempt timestamp
-	AnnotationLastRecoveryAttempt = "coherence.oracle.com/last-recovery-attempt"
+	persistedAnnotationMaxBytes  = 16 * 1024
+	persistedAnnotationHeadBytes = 2 * 1024
+	persistedAnnotationTailBytes = 2 * 1024
 )
 
 // ErrorHandler handles errors in the reconciliation loop
@@ -187,6 +186,24 @@ func contains(s string, substrings ...string) bool {
 	return false
 }
 
+// boundPersistedAnnotation keeps diagnostic annotations small while preserving
+// the start and end of the message for support triage.
+//
+// Bug39366679/PLAN.md showed full patch JSON recursively stored in last-error.
+// The expected effect is that resource names and the root API message remain
+// visible, but a multi-megabyte patch body cannot be persisted on the CR.
+func boundPersistedAnnotation(value string) string {
+	if len(value) <= persistedAnnotationMaxBytes {
+		return value
+	}
+	if persistedAnnotationHeadBytes+persistedAnnotationTailBytes >= persistedAnnotationMaxBytes {
+		return value[:persistedAnnotationMaxBytes]
+	}
+	head := value[:persistedAnnotationHeadBytes]
+	tail := value[len(value)-persistedAnnotationTailBytes:]
+	return fmt.Sprintf("%s\n... truncated %d bytes from persisted annotation ...\n%s", head, len(value)-len(head)-len(tail), tail)
+}
+
 // Common error creation helpers for specific operations
 
 // NewCreateResourceError creates an error for resource creation failures
@@ -260,29 +277,25 @@ func (eh *ErrorHandler) updateErrorTracking(ctx context.Context, resource coh.Co
 		return err
 	}
 
-	// Get the annotations
 	annotations := latest.GetAnnotations()
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
 
-	// Update the last error message
-	annotations[AnnotationLastError] = errMsg
-
-	// Update the error count
+	// Log callers keep the full error, but Bug39366679/PLAN.md requires persisted
+	// annotations to be bounded so patch JSON cannot be recursively stored forever.
 	count := 1
-	if countStr, ok := annotations[AnnotationErrorCount]; ok {
+	if countStr, ok := annotations[coh.AnnotationErrorCount]; ok {
 		if parsedCount, err := strconv.Atoi(countStr); err == nil {
 			count = parsedCount + 1
 		}
 	}
-	annotations[AnnotationErrorCount] = strconv.Itoa(count)
 
-	// Set the annotations back on the resource
-	latest.SetAnnotations(annotations)
-
-	// Update the resource
-	return eh.Client.Update(ctx, latest)
+	_, _, err := metadatapatch.PatchAnnotations(ctx, eh.Client, latest, map[string]string{
+		coh.AnnotationLastError:  boundPersistedAnnotation(errMsg),
+		coh.AnnotationErrorCount: strconv.Itoa(count),
+	})
+	return err
 }
 
 // updateStatus updates the status of the resource based on the error category
@@ -296,8 +309,9 @@ func (eh *ErrorHandler) updateStatus(ctx context.Context, resource coh.Coherence
 		return err
 	}
 
-	// Update the status based on the error category
-	status := latest.GetStatus()
+	original := latest.DeepCopyResource()
+	updated := latest.DeepCopyResource()
+	status := updated.GetStatus()
 
 	// Set the condition based on the error category
 	var condition coh.Condition
@@ -332,11 +346,12 @@ func (eh *ErrorHandler) updateStatus(ctx context.Context, resource coh.Coherence
 		}
 	}
 
-	// Set the condition on the status
+	// SetCondition normalizes historical empty-condition bloat before adding the
+	// failed condition, allowing a compact status patch to repair Bug39366679 CRs.
 	status.SetCondition(latest, condition)
 
-	// Update the resource status
-	return eh.Client.Status().Update(ctx, latest)
+	_, _, err := statuspatch.PatchStatus(ctx, eh.Client, original, updated, true)
+	return err
 }
 
 // handleTransientError handles a transient error
@@ -344,7 +359,7 @@ func (eh *ErrorHandler) handleTransientError(resource coh.CoherenceResource) (re
 	// Get the error count from the annotations
 	annotations := resource.GetAnnotations()
 	count := 1
-	if countStr, ok := annotations[AnnotationErrorCount]; ok {
+	if countStr, ok := annotations[coh.AnnotationErrorCount]; ok {
 		if parsedCount, err := strconv.Atoi(countStr); err == nil {
 			count = parsedCount
 		}
@@ -381,7 +396,7 @@ func (eh *ErrorHandler) attemptRecovery(ctx context.Context, err error, resource
 	}
 
 	// Check if we've already attempted recovery recently
-	if lastAttempt, ok := annotations[AnnotationLastRecoveryAttempt]; ok {
+	if lastAttempt, ok := annotations[coh.AnnotationLastRecoveryAttempt]; ok {
 		// Parse the last attempt time
 		lastAttemptTime, parseErr := time.Parse(time.RFC3339, lastAttempt)
 		if parseErr == nil {
@@ -396,12 +411,11 @@ func (eh *ErrorHandler) attemptRecovery(ctx context.Context, err error, resource
 		}
 	}
 
-	// Record the recovery attempt
-	annotations[AnnotationLastRecoveryAttempt] = time.Now().Format(time.RFC3339)
-	latest.SetAnnotations(annotations)
-
-	// Update the resource
-	if err := eh.Client.Update(ctx, latest); err != nil {
+	// Record the recovery attempt with a metadata-only patch so recovery does not
+	// re-send a bloated status body while handling Bug39366679-style failures.
+	if _, _, err := metadatapatch.PatchAnnotations(ctx, eh.Client, latest, map[string]string{
+		coh.AnnotationLastRecoveryAttempt: time.Now().Format(time.RFC3339),
+	}); err != nil {
 		return reconcile.Result{RequeueAfter: time.Minute}, err
 	}
 
@@ -453,13 +467,15 @@ func (eh *ErrorHandler) attemptRecovery(ctx context.Context, err error, resource
 		"error", err.Error())
 
 	// Add diagnostic information to the resource
-	annotations["coherence.oracle.com/last-unhandled-error"] = err.Error()
-	annotations["coherence.oracle.com/diagnostic-info"] = fmt.Sprintf(
+	diagnosticInfo := fmt.Sprintf(
 		"No specific recovery mechanism available. Error: %s, Time: %s",
 		err.Error(),
 		time.Now().Format(time.RFC3339))
 
-	if updateErr := eh.Client.Update(ctx, latest); updateErr != nil {
+	if _, _, updateErr := metadatapatch.PatchAnnotations(ctx, eh.Client, latest, map[string]string{
+		coh.AnnotationLastUnhandledError: boundPersistedAnnotation(err.Error()),
+		coh.AnnotationDiagnosticInfo:     boundPersistedAnnotation(diagnosticInfo),
+	}); updateErr != nil {
 		eh.Log.Error(updateErr, "Failed to update resource with diagnostic information")
 	}
 
@@ -491,17 +507,11 @@ func (eh *ErrorHandler) recoverFromServiceSuspensionFailure(ctx context.Context,
 	// Check if this is a deletion and has the Coherence finalizer
 	if latest.GetDeletionTimestamp() != nil {
 		// This is a deletion, so we'll try to remove the finalizer
-		annotations := latest.GetAnnotations()
-		if annotations == nil {
-			annotations = make(map[string]string)
-		}
-
-		// Add an annotation to indicate we're bypassing the finalizer
-		annotations["coherence.oracle.com/finalizer-bypass"] = "true"
-		latest.SetAnnotations(annotations)
-
-		// Update the resource with the annotation
-		if err := eh.Client.Update(ctx, latest); err != nil {
+		// Add an annotation to indicate we're bypassing the finalizer. This is a
+		// metadata-only patch so finalizer recovery does not resend status bloat.
+		if _, _, err := metadatapatch.PatchAnnotations(ctx, eh.Client, latest, map[string]string{
+			coh.AnnotationFinalizerBypass: "true",
+		}); err != nil {
 			eh.Log.Error(err, "Failed to add finalizer bypass annotation")
 			return reconcile.Result{RequeueAfter: time.Minute}, err
 		}
@@ -539,18 +549,12 @@ func (eh *ErrorHandler) recoverFromPDBIssue(ctx context.Context, resource coh.Co
 		return reconcile.Result{RequeueAfter: time.Minute}, err
 	}
 
-	// Add diagnostic information
-	annotations := latest.GetAnnotations()
-	if annotations == nil {
-		annotations = make(map[string]string)
-	}
-
-	annotations["coherence.oracle.com/pdb-issue-detected"] = "true"
-	annotations["coherence.oracle.com/pdb-issue-time"] = time.Now().Format(time.RFC3339)
-	latest.SetAnnotations(annotations)
-
-	// Update the resource with the annotation
-	if err := eh.Client.Update(ctx, latest); err != nil {
+	// Update the resource with metadata-only annotations so the recovery marker
+	// cannot include or re-send a large status payload.
+	if _, _, err := metadatapatch.PatchAnnotations(ctx, eh.Client, latest, map[string]string{
+		coh.AnnotationPDBIssueDetected: "true",
+		coh.AnnotationPDBIssueTime:     time.Now().Format(time.RFC3339),
+	}); err != nil {
 		eh.Log.Error(err, "Failed to add PDB issue annotation")
 		return reconcile.Result{RequeueAfter: time.Minute}, err
 	}
@@ -586,17 +590,11 @@ func (eh *ErrorHandler) recoverFromStatefulSetPatchIssue(ctx context.Context, re
 		return reconcile.Result{RequeueAfter: time.Minute}, err
 	}
 
-	// Add diagnostic information
-	annotations := latest.GetAnnotations()
-	if annotations == nil {
-		annotations = make(map[string]string)
-	}
-
-	annotations["coherence.oracle.com/force-reconcile"] = time.Now().Format(time.RFC3339)
-	latest.SetAnnotations(annotations)
-
-	// Update the resource with the annotation
-	if err := eh.Client.Update(ctx, latest); err != nil {
+	// Update the resource with a metadata-only force marker; this prevents
+	// Bug39366679 status bloat from being carried through recovery updates.
+	if _, _, err := metadatapatch.PatchAnnotations(ctx, eh.Client, latest, map[string]string{
+		coh.AnnotationForceReconcile: time.Now().Format(time.RFC3339),
+	}); err != nil {
 		eh.Log.Error(err, "Failed to add force-reconcile annotation")
 		return reconcile.Result{RequeueAfter: time.Minute}, err
 	}
@@ -632,18 +630,12 @@ func (eh *ErrorHandler) recoverFromQuotaIssue(ctx context.Context, resource coh.
 		return reconcile.Result{RequeueAfter: time.Minute}, err
 	}
 
-	// Add diagnostic information
-	annotations := latest.GetAnnotations()
-	if annotations == nil {
-		annotations = make(map[string]string)
-	}
-
-	annotations["coherence.oracle.com/quota-issue-detected"] = "true"
-	annotations["coherence.oracle.com/quota-issue-time"] = time.Now().Format(time.RFC3339)
-	latest.SetAnnotations(annotations)
-
-	// Update the resource with the annotation
-	if err := eh.Client.Update(ctx, latest); err != nil {
+	// Update the resource with metadata-only annotations so quota diagnostics
+	// remain small even when the status currently contains historical bloat.
+	if _, _, err := metadatapatch.PatchAnnotations(ctx, eh.Client, latest, map[string]string{
+		coh.AnnotationQuotaIssueDetected: "true",
+		coh.AnnotationQuotaIssueTime:     time.Now().Format(time.RFC3339),
+	}); err != nil {
 		eh.Log.Error(err, "Failed to add quota issue annotation")
 		return reconcile.Result{RequeueAfter: time.Minute}, err
 	}
@@ -679,18 +671,12 @@ func (eh *ErrorHandler) recoverFromSchedulingIssue(ctx context.Context, resource
 		return reconcile.Result{RequeueAfter: time.Minute}, err
 	}
 
-	// Add diagnostic information
-	annotations := latest.GetAnnotations()
-	if annotations == nil {
-		annotations = make(map[string]string)
-	}
-
-	annotations["coherence.oracle.com/scheduling-issue-detected"] = "true"
-	annotations["coherence.oracle.com/scheduling-issue-time"] = time.Now().Format(time.RFC3339)
-	latest.SetAnnotations(annotations)
-
-	// Update the resource with the annotation
-	if err := eh.Client.Update(ctx, latest); err != nil {
+	// Update the resource with metadata-only annotations so scheduling diagnostics
+	// do not amplify the status size during repeated recovery attempts.
+	if _, _, err := metadatapatch.PatchAnnotations(ctx, eh.Client, latest, map[string]string{
+		coh.AnnotationSchedulingIssueDetected: "true",
+		coh.AnnotationSchedulingIssueTime:     time.Now().Format(time.RFC3339),
+	}); err != nil {
 		eh.Log.Error(err, "Failed to add scheduling issue annotation")
 		return reconcile.Result{RequeueAfter: time.Minute}, err
 	}

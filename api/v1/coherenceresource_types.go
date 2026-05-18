@@ -303,7 +303,9 @@ func (in *Coherence) CreateGlobalAnnotations() map[string]string {
 			annotations[k] = v
 		}
 	}
-	return annotations
+	// Bug39366679/PLAN.md keeps operator diagnostics on the CR only; child
+	// resources that use global annotations should not echo last-error payloads.
+	return FilterOperatorInternalAnnotations(annotations)
 }
 
 // CreateAnnotations returns the annotations to apply to this cluster's
@@ -326,7 +328,9 @@ func (in *Coherence) CreateAnnotations() map[string]string {
 			annotations[k] = v
 		}
 	}
-	return annotations
+	// Filtering the final map catches internal keys from global, spec, and CR
+	// fallback annotations before they can amplify StatefulSet patch payloads.
+	return FilterOperatorInternalAnnotations(annotations)
 }
 
 func (in *Coherence) AddAnnotation(key, value string) {
@@ -454,11 +458,9 @@ func (in *Coherence) HashLabelMatches(m metav1.Object) bool {
 }
 
 func (in *Coherence) UpdateStatusVersion(v string) {
-	in.Status.Conditions.SetCondition(Condition{
-		Type:    ConditionTypeVersioned,
-		Status:  corev1.ConditionTrue,
-		Message: v,
-	})
+	// Route version updates through CoherenceResourceStatus so the next persist
+	// also removes the empty-condition bloat described in Bug39366679/PLAN.md.
+	in.Status.SetVersion(v)
 }
 
 // ----- CoherenceStatefulSetResourceSpec type -----------------------------------------------------
@@ -865,9 +867,14 @@ type CoherenceResourceStatus struct {
 // SetCondition sets the current Status Condition
 func (in *CoherenceResourceStatus) SetCondition(deployment CoherenceResource, c Condition) bool {
 	deployment.GetStatus().DeepCopyInto(in)
-	updated := in.ensureInitialized(deployment)
+	// Normalize after copying the API status; normalizing before this point would
+	// be overwritten by DeepCopyInto and would not repair Bug39366679 resources.
+	updated := in.NormalizeStatus()
+	updated = in.ensureInitialized(deployment) || updated
 	if in.Phase != "" && in.Phase == c.Type {
-		// already at the desired phase
+		// Bug39366679/PLAN.md: older direct phase writes could leave phase set
+		// without the matching condition, so refresh the condition before returning.
+		updated = in.Conditions.SetCondition(c) || updated
 		return updated
 	}
 	// set the requested condition's type as the current phase
@@ -878,7 +885,8 @@ func (in *CoherenceResourceStatus) SetCondition(deployment CoherenceResource, c 
 // Update the status based on the condition of the StatefulSet status.
 func (in *CoherenceResourceStatus) Update(deployment *Coherence, sts *appsv1.StatefulSetStatus) bool {
 	// ensure that there is an Initialized condition
-	updated := in.ensureInitialized(deployment)
+	updated := in.NormalizeStatus()
+	updated = in.ensureInitialized(deployment) || updated
 
 	if sts != nil {
 		// update CurrentReplicas from StatefulSet if required
@@ -897,12 +905,12 @@ func (in *CoherenceResourceStatus) Update(deployment *Coherence, sts *appsv1.Sta
 			// both revisions are the same so the StatefulSet is not updating
 			// If the current phase is not Ready check to see whether it should be ready.
 			if in.Phase != ConditionTypeReady && in.Replicas == in.ReadyReplicas && in.Replicas == in.CurrentReplicas {
-				updated = in.setPhase(ConditionTypeReady)
+				updated = in.setPhase(ConditionTypeReady) || updated
 			}
 		} else {
 			// the revisions are different so the StatefulSet is updating, ensure the phase is set correctly
 			if in.Phase != ConditionTypeRollingUpgrade {
-				updated = in.setPhase(ConditionTypeRollingUpgrade)
+				updated = in.setPhase(ConditionTypeRollingUpgrade) || updated
 			}
 		}
 	} else {
@@ -921,7 +929,7 @@ func (in *CoherenceResourceStatus) Update(deployment *Coherence, sts *appsv1.Sta
 	if deployment.GetSpec().GetReplicas() == 0 {
 		// scaled to zero
 		if in.Phase != ConditionTypeStopped {
-			updated = in.setPhase(ConditionTypeStopped)
+			updated = in.setPhase(ConditionTypeStopped) || updated
 		}
 	}
 
@@ -931,7 +939,8 @@ func (in *CoherenceResourceStatus) Update(deployment *Coherence, sts *appsv1.Sta
 // UpdateFromJob the status based on the condition of the Job status.
 func (in *CoherenceResourceStatus) UpdateFromJob(deployment *CoherenceJob, jobStatus *batchv1.JobStatus, probeStatuses []CoherenceJobProbeStatus) bool {
 	// ensure that there is an Initialized condition
-	updated := in.ensureInitialized(deployment)
+	updated := in.NormalizeStatus()
+	updated = in.ensureInitialized(deployment) || updated
 
 	if jobStatus != nil {
 		count := jobStatus.Active + jobStatus.Succeeded
@@ -948,11 +957,11 @@ func (in *CoherenceResourceStatus) UpdateFromJob(deployment *CoherenceJob, jobSt
 		}
 
 		if in.Phase != ConditionTypeReady && in.Replicas == in.ReadyReplicas && in.Replicas == in.CurrentReplicas {
-			updated = in.setPhase(ConditionTypeReady)
+			updated = in.setPhase(ConditionTypeReady) || updated
 		}
 
 		if jobStatus.CompletionTime != nil {
-			updated = in.setPhase(ConditionTypeCompleted)
+			updated = in.setPhase(ConditionTypeCompleted) || updated
 		}
 
 		if in.Active != jobStatus.Active {
@@ -1000,7 +1009,7 @@ func (in *CoherenceResourceStatus) UpdateFromJob(deployment *CoherenceJob, jobSt
 	if deployment.Spec.GetReplicas() == 0 {
 		// scaled to zero
 		if in.Phase != ConditionTypeStopped {
-			updated = in.setPhase(ConditionTypeStopped)
+			updated = in.setPhase(ConditionTypeStopped) || updated
 		}
 	}
 
@@ -1029,8 +1038,9 @@ func (in *CoherenceResourceStatus) UpdateFromJob(deployment *CoherenceJob, jobSt
 
 // set a status phase.
 func (in *CoherenceResourceStatus) setPhase(phase ConditionType) bool {
+	updated := in.NormalizeStatus()
 	if in.Phase == phase {
-		return false
+		return updated
 	}
 
 	switch {
@@ -1062,7 +1072,9 @@ func (in *CoherenceResourceStatus) setPhase(phase ConditionType) bool {
 
 // ensure that the initial state conditions are present
 func (in *CoherenceResourceStatus) ensureInitialized(deployment CoherenceResource) bool {
-	updated := false
+	// This is a common entry point for status writes, so it also repairs any
+	// historical empty-condition list before adding fresh status values.
+	updated := in.NormalizeStatus()
 
 	// update Hash if required
 	hash := deployment.GetStatus().Hash
@@ -1086,7 +1098,7 @@ func (in *CoherenceResourceStatus) ensureInitialized(deployment CoherenceResourc
 	// ensure that there is an Initialized condition
 	if in.Conditions.GetCondition(ConditionTypeInitialized) == nil {
 		// there is not an Initialized condition - this is probably the first status update
-		updated = in.setPhase(ConditionTypeInitialized)
+		updated = in.setPhase(ConditionTypeInitialized) || updated
 	}
 
 	// update Selector if required
@@ -1115,11 +1127,36 @@ func (in *CoherenceResourceStatus) ensureInitialized(deployment CoherenceResourc
 }
 
 func (in *CoherenceResourceStatus) SetVersion(v string) bool {
+	updated := in.NormalizeStatus()
 	return in.Conditions.SetCondition(Condition{
 		Type:    ConditionTypeVersioned,
 		Status:  corev1.ConditionTrue,
 		Message: v,
-	})
+	}) || updated
+}
+
+// NormalizeStatus normalizes the status fields that can grow pathologically
+// before the operator writes the status subresource.
+//
+// Bug39366679/coherence.yaml contains thousands of empty conditions created by
+// an old status patch path. Returning true lets callers force a compact
+// replacement conditions array even when no semantic phase change is needed.
+func (in *CoherenceResourceStatus) NormalizeStatus() bool {
+	if in == nil {
+		return false
+	}
+	normalized := NormalizeConditions(in.Conditions)
+	if len(normalized) != len(in.Conditions) {
+		in.Conditions = normalized
+		return true
+	}
+	for i := range normalized {
+		if normalized[i] != in.Conditions[i] {
+			in.Conditions = normalized
+			return true
+		}
+	}
+	return false
 }
 
 func (in *CoherenceResourceStatus) FindJobProbeStatus(pod string) CoherenceJobProbeStatus {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2025, Oracle and/or its affiliates.
+ * Copyright (c) 2020, 2026, Oracle and/or its affiliates.
  * Licensed under the Universal Permissive License v 1.0 as shown at
  * http://oss.oracle.com/licenses/upl.
  */
@@ -8,6 +8,7 @@ package patching
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"github.com/go-logr/logr"
@@ -173,14 +174,21 @@ func (in *patcher) ApplyThreeWayPatchWithCallback(ctx context.Context, name stri
 		callback()
 	}
 
-	in.logger.WithValues().Info(fmt.Sprintf("Patching %s/%s", kind, name), "Patch", string(data))
+	in.logger.V(2).Info(fmt.Sprintf("Patching %s/%s", kind, name), "Patch", string(data))
 	err := in.mgr.GetClient().Patch(ctx, current, patch)
 	if err != nil {
-		in.logger.WithValues().Info(fmt.Sprintf("Failed to patch %s/%s", kind, name), "Patch", string(data), "Error", err.Error())
-		return false, errors.Wrapf(err, "failed to patch  %s/%s with %s", kind, name, string(data))
+		// Bug39366679/PLAN.md: do not return the patch body because callers may
+		// persist err.Error() in last-error; size+digest keeps the failure traceable.
+		in.logger.V(2).Info(fmt.Sprintf("Failed to patch %s/%s", kind, name), "Patch", string(data), "Error", err.Error())
+		return false, errors.Wrap(err, patchFailureMessage(kind, name, data))
 	}
 
 	return true, nil
+}
+
+func patchFailureMessage(kind, name string, data []byte) string {
+	digest := sha256.Sum256(data)
+	return fmt.Sprintf("failed to patch %s/%s: patch size=%d bytes, sha256=%x", kind, name, len(data), digest)
 }
 
 // CreateThreeWayPatch creates a three-way patching between the original state, the current state and the desired state of a k8s resource.
@@ -201,7 +209,7 @@ func (in *patcher) CreateThreeWayPatch(name string, original, desired, current r
 
 	// log the patching
 	kind := current.GetObjectKind().GroupVersionKind().Kind
-	in.logger.Info(fmt.Sprintf("Created patch for %s/%s", kind, name), "Patch", string(data))
+	in.logger.V(2).Info(fmt.Sprintf("Created patch for %s/%s", kind, name), "Patch", string(data))
 
 	return client.RawPatch(in.patchType, data), data, nil
 }

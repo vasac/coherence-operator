@@ -21,6 +21,7 @@ import (
 	"github.com/oracle/coherence-operator/pkg/operator"
 	"github.com/oracle/coherence-operator/pkg/patching"
 	"github.com/oracle/coherence-operator/pkg/probe"
+	"github.com/oracle/coherence-operator/pkg/statuspatch"
 	"github.com/oracle/coherence-operator/pkg/utils"
 	"github.com/pkg/errors"
 	appsv1 "k8s.io/api/apps/v1"
@@ -39,8 +40,8 @@ const (
 	controllerName = "controllers.StatefulSet"
 
 	CreateMessage        string = "successfully created StatefulSet for Coherence resource '%s'"
-	FailedToScaleMessage string = "failed to scale Coherence resource %s from %d to %d due to error\n%s"
-	FailedToPatchMessage string = "failed to patch Coherence resource %s due to error\n%s"
+	FailedToScaleMessage string = "failed to scale Coherence resource %s from %d to %d"
+	FailedToPatchMessage string = "failed to patch Coherence resource %s"
 
 	EventReasonScale string = "Scaling"
 
@@ -158,7 +159,7 @@ func (in *ReconcileStatefulSet) ReconcileAllResourceOfKind(ctx context.Context, 
 				logger.Info("Scaling down to zero")
 				in.GetEventRecorder().Eventf(deployment, nil, corev1.EventTypeNormal, reconciler.EventReasonScaling, "",
 					"scaling statefuleset %s down to zero", request.Name)
-				err = in.UpdateDeploymentStatusActionsState(ctx, request.NamespacedName, false)
+				err = in.UpdateCoherenceStatusActionsState(ctx, request.NamespacedName, false)
 				// TODO: what to do with error?
 				if err != nil {
 					logger.Info("Error updating deployment status", "error", err.Error())
@@ -205,7 +206,7 @@ func (in *ReconcileStatefulSet) ReconcileAllResourceOfKind(ctx context.Context, 
 		if updated, err = in.updateDeploymentStatus(ctx, request); err == nil {
 			if updated.Status.Phase == coh.ConditionTypeReady && !updated.Status.ActionsExecuted && deployment.GetReplicas() != 0 {
 				in.execActions(ctx, stsCurrent, deployment)
-				err = in.UpdateDeploymentStatusActionsState(ctx, request.NamespacedName, true)
+				err = in.UpdateCoherenceStatusActionsState(ctx, request.NamespacedName, true)
 			}
 		}
 	}
@@ -433,7 +434,9 @@ func (in *ReconcileStatefulSet) maybePatchStatefulSet(ctx context.Context, deplo
 	if resource.IsPresent() {
 		err := resource.As(original)
 		if err != nil {
-			return in.HandleErrAndRequeue(ctx, err, deployment, fmt.Sprintf(FailedToPatchMessage, deployment.GetName(), err.Error()), logger)
+			// Bug39366679/PLAN.md: pass concise context only; HandleErrAndRequeue
+			// logs and records the error separately so large errors are not duplicated.
+			return in.HandleErrAndRequeue(ctx, err, deployment, fmt.Sprintf(FailedToPatchMessage, deployment.GetName()), logger)
 		}
 	} else {
 		// there was no previous
@@ -573,7 +576,9 @@ func (in *ReconcileStatefulSet) maybePatchStatefulSet(ctx context.Context, deplo
 	switch {
 	case err != nil:
 		logger.Info("Error patching StatefulSet " + err.Error())
-		return in.HandleErrAndRequeue(ctx, err, deployment, fmt.Sprintf(FailedToPatchMessage, deployment.GetName(), err.Error()), logger)
+		// Bug39366679/PLAN.md: avoid embedding err.Error() in the handler message;
+		// events and logs append the error once inside the common handler.
+		return in.HandleErrAndRequeue(ctx, err, deployment, fmt.Sprintf(FailedToPatchMessage, deployment.GetName()), logger)
 	case !patched:
 		return reconcile.Result{RequeueAfter: time.Minute}, nil
 	}
@@ -663,7 +668,9 @@ func (in *ReconcileStatefulSet) safeScale(ctx context.Context, deployment coh.Co
 			return reconcile.Result{RequeueAfter: time.Minute}, nil
 		}
 		// failed
-		return in.HandleErrAndRequeue(ctx, err, deployment, fmt.Sprintf(FailedToScaleMessage, deployment.GetName(), current, replicas, err.Error()), logger)
+		// Bug39366679/PLAN.md: keep the handler message short; the common error
+		// path appends err.Error() once for events and logs.
+		return in.HandleErrAndRequeue(ctx, err, deployment, fmt.Sprintf(FailedToScaleMessage, deployment.GetName(), current, replicas), logger)
 	}
 
 	// Not StatusHA - wait at least one minute
@@ -774,7 +781,9 @@ func (in *ReconcileStatefulSet) updateDeploymentStatus(ctx context.Context, requ
 			stsStatus = &sts.Status
 		}
 		if updated.Status.Update(deployment, stsStatus) {
-			err = in.GetClient().Status().Update(ctx, updated)
+			// Bug39366679/PLAN.md: use the compact status patch writer so repairing
+			// a bloated conditions list does not require sending a full status update.
+			_, _, err = statuspatch.PatchStatus(ctx, in.GetClient(), deployment, updated, true)
 		}
 	}
 	return deployment, err

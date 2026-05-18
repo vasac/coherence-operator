@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2025, Oracle and/or its affiliates.
+ * Copyright (c) 2020, 2026, Oracle and/or its affiliates.
  * Licensed under the Universal Permissive License v 1.0 as shown at
  * http://oss.oracle.com/licenses/upl.
  */
@@ -259,25 +259,33 @@ func (in *CoherenceJob) CreateGlobalAnnotations() map[string]string {
 			annotations[k] = v
 		}
 	}
-	return annotations
+	// Bug39366679/PLAN.md keeps operator diagnostics on the CR only; child
+	// resources that use global annotations should not echo last-error payloads.
+	return FilterOperatorInternalAnnotations(annotations)
 }
 
 // CreateAnnotations returns the annotations to apply to this cluster's
 // deployment (StatefulSet).
 func (in *CoherenceJob) CreateAnnotations() map[string]string {
-	var annotations map[string]string
+	annotations := in.CreateGlobalAnnotations()
 	if in.Spec.JobAnnotations != nil {
-		annotations = make(map[string]string)
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
 		for k, v := range in.Spec.JobAnnotations {
 			annotations[k] = v
 		}
 	} else if in.Annotations != nil {
-		annotations = make(map[string]string)
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
 		for k, v := range in.Annotations {
 			annotations[k] = v
 		}
 	}
-	return annotations
+	// Filtering the final map catches internal keys from global, spec, and CR
+	// fallback annotations before they can amplify Job patch payloads.
+	return FilterOperatorInternalAnnotations(annotations)
 }
 
 // GetNamespacedName returns the namespace/name key to look up this resource.
@@ -391,11 +399,9 @@ func (in *CoherenceJob) HashLabelMatches(m metav1.Object) bool {
 }
 
 func (in *CoherenceJob) UpdateStatusVersion(v string) {
-	in.Status.Conditions.SetCondition(Condition{
-		Type:    ConditionTypeVersioned,
-		Status:  corev1.ConditionTrue,
-		Message: v,
-	})
+	// Route version updates through CoherenceResourceStatus so the next persist
+	// also removes the empty-condition bloat described in Bug39366679/PLAN.md.
+	in.Status.SetVersion(v)
 }
 
 // ----- CoherenceJobList type ----------------------------------------------
@@ -599,7 +605,9 @@ func (in *CoherenceJobResourceSpec) CreateJobResource(deployment *CoherenceJob) 
 
 // CreateJob creates the deployment's Job.
 func (in *CoherenceJobResourceSpec) CreateJob(deployment *CoherenceJob) batchv1.Job {
-	ann := deployment.CreateGlobalAnnotations()
+	// CreateAnnotations now preserves globals, applies job-specific overrides,
+	// and filters internal diagnostics before they reach the child Job.
+	ann := deployment.CreateAnnotations()
 	job := batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:   deployment.GetNamespace(),
