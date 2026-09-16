@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2025, Oracle and/or its affiliates.
+ * Copyright (c) 2020, 2026, Oracle and/or its affiliates.
  * Licensed under the Universal Permissive License v 1.0 as shown at
  * http://oss.oracle.com/licenses/upl.
  */
@@ -52,7 +52,7 @@ func AssertPrometheus(t *testing.T, yamlFile string, promPod corev1.Pod, promCli
 	deployments, cohPods := helper.AssertDeployments(testContext, t, yamlFile)
 	deployment := deployments["test"]
 
-	err := ShouldEventuallyHaveServiceMonitor(t, deployment.Namespace, "test-metrics", promClient, 10*time.Second, 5*time.Minute)
+	err := ShouldEventuallyHaveServiceMonitorWithState(t, deployment.Namespace, "test-metrics", hasNoRelabelings, promClient, 10*time.Second, 5*time.Minute)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Wait for Coherence metrics to appear in Prometheus
@@ -154,6 +154,14 @@ type ServiceMonitorPredicate func(*testing.T, *monitoring.ServiceMonitor) bool
 
 func alwaysTrue(*testing.T, *monitoring.ServiceMonitor) bool {
 	return true
+}
+
+func hasNoRelabelings(t *testing.T, sm *monitoring.ServiceMonitor) bool {
+	if len(sm.Spec.Endpoints) > 0 && len(sm.Spec.Endpoints[0].RelabelConfigs) == 0 {
+		return true
+	}
+	t.Logf("Waiting for availability of ServiceMonitor resource %s - without endpoint relabelings", sm.Name)
+	return false
 }
 
 func hasInterval(t *testing.T, sm *monitoring.ServiceMonitor) bool {

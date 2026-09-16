@@ -13,6 +13,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	coh "github.com/oracle/coherence-operator/api/v1"
+	monitoring "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 )
 
 func TestServiceMonitorSpecCreateServiceMonitorWithNilSampleLimit(t *testing.T) {
@@ -61,4 +62,20 @@ func TestServiceMonitorSpecSampleLimitHasLegacyWireFormat(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(legacy.SampleLimit).NotTo(BeNil())
 	g.Expect(*legacy.SampleLimit).To(Equal(value))
+}
+
+func TestNamedPortSpecCreateServiceMonitorDoesNotAddRelabeling(t *testing.T) {
+	custom := []monitoring.RelabelConfig{{Action: "replace", SourceLabels: []monitoring.LabelName{"pod"}, TargetLabel: "origin"}}
+	for _, rules := range [][]monitoring.RelabelConfig{nil, {}, custom} {
+		g := NewGomegaWithT(t)
+		spec := &coh.ServiceMonitorSpec{Enabled: boolPtr(true), Relabelings: rules, MetricRelabelings: custom, HonorLabels: true, Interval: "15s", Path: "/metrics", ScrapeTimeout: "10s"}
+		port := coh.NamedPortSpec{Name: "metrics", ServiceMonitor: spec}
+		expected := spec.CreateEndpoint()
+		expected.Port = "metrics"
+		for _, parent := range []coh.CoherenceResource{&coh.Coherence{}, &coh.CoherenceJob{}} {
+			sm := port.CreateServiceMonitor(parent)
+			g.Expect(sm).NotTo(BeNil())
+			g.Expect(sm.Spec.Endpoints).To(Equal([]monitoring.Endpoint{expected}))
+		}
+	}
 }

@@ -1373,10 +1373,6 @@ func (in *NamedPortSpec) CreateServiceMonitor(deployment CoherenceResource) *mon
 
 	endpoint := in.ServiceMonitor.CreateEndpoint()
 	endpoint.Port = in.Name
-	endpoint.RelabelConfigs = append(endpoint.RelabelConfigs, monitoringv1.RelabelConfig{
-		Action: "labeldrop",
-		Regex:  "(endpoint|instance|job|service)",
-	})
 
 	spec := in.ServiceMonitor.CreateServiceMonitor()
 	spec.Selector = metav1.LabelSelector{MatchLabels: selector}
