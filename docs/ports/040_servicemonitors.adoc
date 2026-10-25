@@ -71,6 +71,30 @@ https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1
 and https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.Endpoint[Prometheus Endpoint]
 to allow the `ServiceMonitor` to be configured for most use-cases.
 
+Starting with Coherence Operator 3.5.18, the Operator adds no default relabeling rules.
+The `serviceMonitor.relabelings` and `serviceMonitor.metricRelabelings` fields are passed through as configured.
+Earlier versions always appended a `labeldrop` rule that removed the `endpoint`, `instance`, `job`, and `service` labels.
+To retain that behavior, configure the rule explicitly:
+
+[source,yaml]
+----
+apiVersion: coherence.oracle.com/v1
+kind: Coherence
+metadata:
+  name: test-cluster
+spec:
+  ports:
+    - name: rest
+      port: 8080
+      serviceMonitor:
+        enabled: true
+        relabelings:
+          - action: labeldrop
+            regex: (endpoint|instance|job|service)
+----
+
+The same configuration is available for ports on a `CoherenceJob` resource.
+
 In situations where the `Coherence` CRD does not have the required fields, for example when a different version
 of Prometheus has been installed to that used to build the Coherence Operator, then the solution would be to
 manually create `ServiceMonitors` instead of letting them be created by the Coherence Operator.

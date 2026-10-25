@@ -74,6 +74,8 @@ PREV_OPERATOR_IMAGE_AMD   := $(OPERATOR_IMAGE_REGISTRY)/$(OPERATOR_IMAGE_NAME):$
 OPERATOR_IMAGE_DELVE      := $(OPERATOR_IMAGE_REGISTRY)/$(OPERATOR_IMAGE_NAME):delve
 OPERATOR_IMAGE_DEBUG      := $(OPERATOR_IMAGE_REGISTRY)/$(OPERATOR_IMAGE_NAME):debug
 OPERATOR_BASE_IMAGE       ?= scratch
+# Local multi-platform OCI archive (does not load or publish the image).
+OPERATOR_IMAGE_ARCHIVE    ?= $(BUILD_OUTPUT)/images/$(OPERATOR_IMAGE_NAME)-$(OPERATOR_IMAGE_TAG).oci.tar
 
 # The registry we release (push) the operator images to, which can be different to the registry
 # used to build and test the operator.
@@ -564,6 +566,18 @@ define buildOperatorImage
 		--load -t $(3) .
 endef
 
+# Requires a Buildx builder with multi-platform OCI export support.
+.PHONY: build-operator-multiarch
+build-operator-multiarch: $(BUILD_BIN)/runner $(BUILD_TARGETS)/java $(BUILD_TARGETS)/cli ## Build a local AMD64/ARM64 OCI image archive without publishing
+	mkdir -p "$$(dirname "$(OPERATOR_IMAGE_ARCHIVE)")"
+	$(DOCKER_CMD) buildx build --platform linux/amd64,linux/arm64 \
+		--build-arg version=$(VERSION) \
+		--build-arg BASE_IMAGE=$(OPERATOR_BASE_IMAGE) \
+		--build-arg coherence_image=$(COHERENCE_IMAGE) \
+		--build-arg operator_image=$(OPERATOR_IMAGE) \
+		--build-arg release=$(GITCOMMIT) \
+		--output "type=oci,dest=$(OPERATOR_IMAGE_ARCHIVE)" -t $(OPERATOR_IMAGE) .
+
 OPERATOR_OL_BASE_IMAGE  ?= container-registry.oracle.com/java/jdk:17
 
 .PHONY: build-operator-with-tools
@@ -595,7 +609,7 @@ $(BUILD_TARGETS)/delve-image:
 	$(DOCKER_CMD) build --build-arg BASE_IMAGE=golang:$${GVS} -f debug/Base.Dockerfile -t $(OPERATOR_IMAGE_DELVE) --load debug
 	touch $(BUILD_TARGETS)/delve-image
 
-$(BUILD_BIN)/runner-debug: $(BUILD_PROPS) $(GOS) $(BUILD_TARGETS)/generate $(BUILD_TARGETS)/manifests
+$(BUILD_BIN)/runner-debug: .go-version $(BUILD_PROPS) $(GOS) $(BUILD_TARGETS)/generate $(BUILD_TARGETS)/manifests
 	mkdir -p $(BUILD_BIN_AMD64) || true
 	GOOS=linux GOARCH=amd64 GO111MODULE=on go build -gcflags "-N -l" -ldflags "$(LDFLAGS)" -a -o $(BUILD_BIN_AMD64)/runner-debug ./runner
 	mkdir -p $(BUILD_BIN_ARM64)/linux || true
@@ -740,7 +754,7 @@ ensure-sdk:
 .PHONY: build-runner
 build-runner: $(BUILD_BIN)/runner  ## Build the Coherence Operator runner binary
 
-$(BUILD_BIN)/runner: $(BUILD_PROPS) $(GOS) $(BUILD_TARGETS)/generate $(BUILD_TARGETS)/manifests
+$(BUILD_BIN)/runner: .go-version $(BUILD_PROPS) $(GOS) $(BUILD_TARGETS)/generate $(BUILD_TARGETS)/manifests
 	mkdir -p $(BUILD_BIN_AMD64) || true
 	GOOS=linux GOARCH=amd64 GO111MODULE=on go build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_BIN_AMD64)/runner ./runner
 	mkdir -p $(BUILD_BIN_ARM64)/linux || true

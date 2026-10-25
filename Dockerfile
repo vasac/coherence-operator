@@ -6,7 +6,8 @@
 ARG BASE_IMAGE=scratch
 FROM $BASE_IMAGE
 
-ARG target
+ARG TARGETARCH
+ARG target=${TARGETARCH}
 ARG version
 ARG coherence_image
 ARG operator_image

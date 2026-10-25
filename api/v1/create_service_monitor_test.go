@@ -66,16 +66,50 @@ func TestServiceMonitorSpecSampleLimitHasLegacyWireFormat(t *testing.T) {
 
 func TestNamedPortSpecCreateServiceMonitorDoesNotAddRelabeling(t *testing.T) {
 	custom := []monitoring.RelabelConfig{{Action: "replace", SourceLabels: []monitoring.LabelName{"pod"}, TargetLabel: "origin"}}
-	for _, rules := range [][]monitoring.RelabelConfig{nil, {}, custom} {
-		g := NewGomegaWithT(t)
-		spec := &coh.ServiceMonitorSpec{Enabled: boolPtr(true), Relabelings: rules, MetricRelabelings: custom, HonorLabels: true, Interval: "15s", Path: "/metrics", ScrapeTimeout: "10s"}
-		port := coh.NamedPortSpec{Name: "metrics", ServiceMonitor: spec}
-		expected := spec.CreateEndpoint()
-		expected.Port = "metrics"
-		for _, parent := range []coh.CoherenceResource{&coh.Coherence{}, &coh.CoherenceJob{}} {
-			sm := port.CreateServiceMonitor(parent)
-			g.Expect(sm).NotTo(BeNil())
-			g.Expect(sm.Spec.Endpoints).To(Equal([]monitoring.Endpoint{expected}))
+	legacy := []monitoring.RelabelConfig{{Action: "labeldrop", Regex: "(endpoint|instance|job|service)"}}
+	metricRules := []monitoring.RelabelConfig{{Action: "drop", SourceLabels: []monitoring.LabelName{"__name__"}, Regex: "ignored_metric"}}
+	tests := []struct {
+		name  string
+		rules []monitoring.RelabelConfig
+	}{
+		{name: "omitted"},
+		{name: "empty", rules: []monitoring.RelabelConfig{}},
+		{name: "custom", rules: custom},
+		{name: "explicit legacy labeldrop", rules: legacy},
+	}
+	parents := []struct {
+		name     string
+		resource coh.CoherenceResource
+	}{
+		{name: "Coherence", resource: &coh.Coherence{}},
+		{name: "CoherenceJob", resource: &coh.CoherenceJob{}},
+	}
+	for _, tt := range tests {
+		for _, parent := range parents {
+			t.Run(tt.name+"/"+parent.name, func(t *testing.T) {
+				g := NewGomegaWithT(t)
+				spec := &coh.ServiceMonitorSpec{Enabled: boolPtr(true), Relabelings: tt.rules, MetricRelabelings: metricRules, HonorLabels: true, Interval: "15s", Path: "/metrics", ScrapeTimeout: "10s"}
+				port := coh.NamedPortSpec{Name: "metrics", ServiceMonitor: spec}
+				expected := monitoring.Endpoint{
+					Port:                 "metrics",
+					Path:                 "/metrics",
+					Interval:             "15s",
+					ScrapeTimeout:        "10s",
+					HonorLabels:          true,
+					RelabelConfigs:       tt.rules,
+					MetricRelabelConfigs: metricRules,
+				}
+
+				sm := port.CreateServiceMonitor(parent.resource)
+
+				g.Expect(sm).NotTo(BeNil())
+				g.Expect(sm.Spec.Endpoints).To(Equal([]monitoring.Endpoint{expected}))
+				data, err := json.Marshal(sm.Spec.Endpoints[0])
+				g.Expect(err).NotTo(HaveOccurred())
+				if len(tt.rules) == 0 {
+					g.Expect(string(data)).NotTo(ContainSubstring(`"relabelings"`))
+				}
+			})
 		}
 	}
 }
