@@ -67,11 +67,18 @@ jobs:
         sudo rm -rf /usr/local/lib/android
         df -h
 
-    - name: Set up JDK
+    # Coherence 21.12.5 requires JDK 17 when Maven runs on Java 24 or later.
+    - name: Set up legacy Coherence JDK 17
+      uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: '17'
+
+    - name: Set up build JDK 25
       uses: oracle-actions/setup-java@v1
       with:
         website: oracle.com
-        release: 21
+        release: 25
 
     - name: Cache Go Modules
       uses: actions/cache@v5
@@ -84,9 +91,9 @@ jobs:
     - name: Cache Maven packages
       uses: actions/cache@v5
       with:
-        path: ~/.m2
-        key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
-        restore-keys: ${{ runner.os }}-m2
+        path: ~/.m2/repository
+        key: ${{ runner.os }}-maven-repository-v1-${{ hashFiles('**/pom.xml') }}
+        restore-keys: ${{ runner.os }}-maven-repository-v1-
 
     - name: Edit DNS Resolve
       shell: bash
