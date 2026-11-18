@@ -71,7 +71,7 @@ https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1
 and https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.Endpoint[Prometheus Endpoint]
 to allow the `ServiceMonitor` to be configured for most use-cases.
 
-Starting with Coherence Operator 3.5.18, the Operator adds no default relabeling rules.
+Starting with Coherence Operator 3.5.19, the Operator adds no default relabeling rules.
 The `serviceMonitor.relabelings` and `serviceMonitor.metricRelabelings` fields are passed through as configured.
 Earlier versions always appended a `labeldrop` rule that removed the `endpoint`, `instance`, `job`, and `service` labels.
 To retain that behavior, configure the rule explicitly:
