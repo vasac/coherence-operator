@@ -8,7 +8,7 @@ module github.com/oracle/coherence-operator
 // See ./.go-version for the go compiler version used when building binaries
 //
 // https://go.dev/doc/modules/gomod-ref#go
-go 1.27.1
+go 1.27.4
 
 require (
 	github.com/Masterminds/semver/v3 v3.5.0
